@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ROS 2 Graph Visualizer</title>
+    <!-- vis-network is a powerful library for network visualization -->
+    <script type="text/javascript" src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <style>
+        html, body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            background-color: #f0f2f5;
+        }
+        #graph-container {
+            width: 100%;
+            height: 100%;
+            border: 1px solid #d1d5db;
+            box-sizing: border-box;
+        }
+        .header {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            background-color: rgba(255, 255, 255, 0.9);
+            padding: 8px 12px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 10;
+            display: flex;
+            align-items: center;
+        }
+        .status-light {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+            transition: background-color 0.3s;
+        }
+        .status-connected {
+            background-color: #2ecc71; /* Green */
+        }
+        .status-disconnected {
+            background-color: #e74c3c; /* Red */
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <div id="status-indicator" class="status-light status-disconnected"></div>
+        <span id="status-text">Disconnected</span>
+    </div>
+
+    <div id="graph-container"></div>
+
+    <script type="text/javascript">
+        // DOM element where the graph will be rendered
+        const container = document.getElementById('graph-container');
+        const statusIndicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+
+        // Configuration options for the vis.js graph
+        const options = {
+            layout: {
+                hierarchical: false, // Use a physics-based layout
+                improvedLayout: true,
+            },
+            physics: {
+                stabilization: false,
+                barnesHut: {
+                    gravitationalConstant: -8000,
+                    springConstant: 0.04,
+                    springLength: 150,
+                },
+            },
+            nodes: {
+                shape: 'box',
+                font: {
+                    size: 14,
+                    color: '#343434'
+                },
+                borderWidth: 1,
+                shadow: true,
+            },
+            edges: {
+                arrows: {
+                    to: { enabled: true, scaleFactor: 1, type: 'arrow' }
+                },
+                color: {
+                    color: '#848484',
+                    highlight: '#848484',
+                    hover: '#2B7CE9',
+                },
+                smooth: {
+                    type: 'cubicBezier',
+                    forceDirection: 'horizontal',
+                    roundness: 0.4
+                },
+                width: 2,
+                shadow: true,
+            },
+            interaction: {
+                hover: true,
+                tooltipDelay: 200,
+            },
+        };
+
+        // Initialize a vis.js network
+        let network = new vis.Network(container, {}, options);
+        let currentNodes = new vis.DataSet([]);
+        let currentEdges = new vis.DataSet([]);
+        network.setData({ nodes: currentNodes, edges: currentEdges });
+
+
+        /**
+         * Transforms the ROS graph data from our backend into a format
+         * that vis.js can understand.
+         * @param {object} rosData - The JSON object from the WebSocket.
+         * @returns {{nodes: vis.DataSet, edges: vis.DataSet}}
+         */
+        function transformRosDataToVis(rosData) {
+            const nodes = new vis.DataSet();
+            const edges = new vis.DataSet();
+            const edgeSet = new Set(); // To prevent duplicate edges
+
+            // Add ROS Nodes (e.g., /talker, /listener)
+            rosData.nodes?.forEach(nodeName => {
+                // We filter out the inspector node itself from the visualization
+                if (nodeName.includes("ros_graph_inspector_node")) return;
+                
+                nodes.add({
+                    id: nodeName,
+                    label: nodeName,
+                    shape: 'ellipse',
+                    color: { background: '#D2E5FF', border: '#2B7CE9' },
+                    margin: 10,
+                });
+            });
+
+            // Add Topic nodes and create edges for publishers/subscribers
+            for (const topicName in rosData.topics) {
+                const topic = rosData.topics[topicName];
+
+                // Add the topic itself as a node
+                nodes.add({
+                    id: topicName,
+                    label: topicName,
+                    shape: 'box',
+                    color: { background: '#FFFFC6', border: '#FFC200' },
+                    title: `Type: ${topic.types.join(', ')}`, // Tooltip
+                    margin: 10,
+                });
+
+                // Create edges from Publishers -> Topic
+                topic.publishers?.forEach(pubNode => {
+                    const edgeId = `${pubNode}->${topicName}`;
+                    if (!edgeSet.has(edgeId)) {
+                        edges.add({ id: edgeId, from: pubNode, to: topicName });
+                        edgeSet.add(edgeId);
+                    }
+                });
+
+                // Create edges from Topic -> Subscribers
+                topic.subscribers?.forEach(subNode => {
+                    const edgeId = `${topicName}->${subNode}`;
+                    if (!edgeSet.has(edgeId)) {
+                        edges.add({ id: edgeId, from: topicName, to: subNode });
+                        edgeSet.add(edgeId);
+                    }
+                });
+            }
+            return { nodes, edges };
+        }
+
+        /**
+         * Connects to the WebSocket server and sets up event listeners.
+         */
+        function connect() {
+            const socket = new WebSocket("ws://localhost:8080/ws");
+
+            socket.onopen = function(e) {
+                console.log("[open] Connection established");
+                statusIndicator.className = 'status-light status-connected';
+                statusText.textContent = 'Connected';
+            };
+
+            socket.onmessage = function(event) {
+                console.log(`[message] Data received from server`);
+                try {
+                    const rosData = JSON.parse(event.data);
+                    const { nodes, edges } = transformRosDataToVis(rosData);
+                    
+                    // Efficiently update the graph without a full redraw
+                    // Remove nodes that no longer exist
+                    const existingNodeIds = new Set(nodes.getIds());
+                    currentNodes.getIds().forEach(id => {
+                        if (!existingNodeIds.has(id)) {
+                            currentNodes.remove(id);
+                        }
+                    });
+
+                    // Add/update nodes
+                    nodes.forEach(node => {
+                        currentNodes.update(node);
+                    });
+
+                    // Remove edges that no longer exist
+                    const existingEdgeIds = new Set(edges.getIds());
+                    currentEdges.getIds().forEach(id => {
+                        if (!existingEdgeIds.has(id)) {
+                            currentEdges.remove(id);
+                        }
+                    });
+                    
+                    // Add/update edges
+                    edges.forEach(edge => {
+                        currentEdges.update(edge);
+                    });
+
+                } catch (error) {
+                    console.error("Failed to parse or process graph data:", error);
+                }
+            };
+
+            socket.onclose = function(event) {
+                console.log('[close] Connection died. Attempting to reconnect...');
+                statusIndicator.className = 'status-light status-disconnected';
+                statusText.textContent = 'Reconnecting...';
+                // Attempt to reconnect after a short delay
+                setTimeout(connect, 3000);
+            };
+
+            socket.onerror = function(error) {
+                console.error(`[error] ${error.message}`);
+            };
+        }
+
+        // Initial connection attempt
+        connect();
+
+    </script>
+</body>
+</html>
