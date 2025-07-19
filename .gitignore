@@ -1,0 +1,33 @@
+# Go dependencies
+# These are managed by 'go mod' and don't need to be checked in.
+/vendor/
+
+# Build output
+# This will ignore any 'build' or 'bin' directories.
+/build/
+/bin/
+
+# Compiled executable files
+# This will ignore the binary created from your 'cmd' directory.
+/ros2vizcli
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Coverage profiless
+*.out
+*.cover
+
+# OS-generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
